@@ -26,5 +26,7 @@
  "extra_files": [
   "sky.ply (17,250-gaussian 400 m sky dome baked from the learned sky cube map)"
  ],
- "method": "drivestudio StreetGS (background + 45 rigid vehicles + cube-map sky), 7 ring cameras at 1024x775, lidar depth loss, 30k iterations"
+ "method": "drivestudio StreetGS (background + 45 rigid vehicles + cube-map sky), 7 ring cameras at 1024x775, lidar depth loss, 30k iterations",
+ "background": "background.spz",
+ "background_note": "SPZ compressed from the 84 MB ply with tools/to_spz.mjs"
 }

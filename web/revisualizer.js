@@ -113,7 +113,7 @@ export class Revisualizer extends EventTarget {
     const prog = { bg: 0, actors: 0 };
     const report = () => this.opts.onProgress?.(prog.bg * 0.85 + prog.actors * 0.15);
     this.background = new SplatMesh({
-      url: new URL("background.ply", base).href,
+      url: new URL(meta.background || "background.ply", base).href,
       raycastable: this.opts.tapToGo,
       onProgress: (e) => { if (e.total) { prog.bg = e.loaded / e.total; report(); } },
     });

@@ -35,7 +35,7 @@ A standard 3D Gaussian Splatting binary PLY (the INRIA layout):
 | `scale_0..2` | log scale |
 | `rot_0..3` | quaternion **w, x, y, z** |
 
-Any format [Spark](https://sparkjs.dev) can read also works (`.spz`, `.splat`, `.ksplat`, `.sog`) if you change the file name in `revisualizer.js`. Keep each file under 95 MB if you host it on GitHub.
+Any format [Spark](https://sparkjs.dev) can read also works (`.spz`, `.splat`, `.ksplat`, `.sog`): set `"background": "background.spz"` in `meta.json`. `node tools/to_spz.mjs background.ply background.spz` compresses a ply about 3-10x (the demo scene goes from 84 MB to 26 MB). Keep each file under 95 MB if you host it on GitHub.
 
 ## `actors/<track_id>.ply`
 
