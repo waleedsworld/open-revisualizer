@@ -1,0 +1,30 @@
+{
+ "name": "av2-miami-turn",
+ "source": "Argoverse 2 Sensor, log 3de5b5d6-68c4-3c95-84ed-be7c83d829f8, CC BY-NC-SA 4.0",
+ "segment": [
+  5.0,
+  15.5
+ ],
+ "num_gaussians_bg": 1500000,
+ "sh_degree_in_ply": 0,
+ "num_actors": 45,
+ "train_iters": 30000,
+ "gpu": "RTX 4090 (Vast.ai)",
+ "train_minutes": 55.0,
+ "compare_frame": 60,
+ "compare_is_heldout": true,
+ "compare_psnr": 26.17,
+ "notes": "Background trained with SH degree 1 but written with SH0 (DC only) so it fits under 95 MB at 1.5M gaussians (84 MB). Pedestrians are not modelled and can appear as faint ghosts. The area under and right around the ego car was never seen by any camera, so it renders as a grey or speckled patch: cover it with the car model. Views 4 m above the cameras show smearing on vertical surfaces and on tree canopies.",
+ "psnr_eval": 23.0,
+ "ssim_eval": 0.663,
+ "lpips_eval": 0.357,
+ "psnr_eval_note": "drivestudio test metrics on 70 held-out images (every 10th frame, all 7 cameras, 1024x775); vehicle-only PSNR 20.06",
+ "psnr_train": 25.9,
+ "psnr_train_note": "training-batch PSNR at the last logged iterations (mean of steps 28500-30000); the full train-set render was not waited for",
+ "road_z_below_ego": -0.25,
+ "road_z_note": "road surface is about 0.25-0.35 m below the ego pose (AV2 ego origin = rear axle centre), measured along the whole path; the ego path itself climbs about 2 m over the segment",
+ "extra_files": [
+  "sky.ply (17,250-gaussian 400 m sky dome baked from the learned sky cube map)"
+ ],
+ "method": "drivestudio StreetGS (background + 45 rigid vehicles + cube-map sky), 7 ring cameras at 1024x775, lidar depth loss, 30k iterations"
+}

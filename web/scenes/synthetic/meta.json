@@ -1,0 +1,11 @@
+{
+  "name": "Synthetic test town",
+  "source": "procedural (tools/make_synthetic_scene.py)",
+  "segment": [
+    0,
+    16.0
+  ],
+  "num_gaussians_bg": 587806,
+  "num_actors": 3,
+  "notes": "Procedural scene for testing the viewer without a GPU."
+}
