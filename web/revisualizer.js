@@ -51,7 +51,7 @@ export class Revisualizer extends EventTarget {
     this._camPos = null;
     this._camLook = null;
 
-    const r = (this.renderer = new THREE.WebGLRenderer({ antialias: false, preserveDrawingBuffer: true, powerPreference: "high-performance" }));
+    const r = (this.renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true, preserveDrawingBuffer: true, powerPreference: "high-performance" }));
     r.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     r.setClearColor(0x000000, 1);
     this.container.appendChild(r.domElement);
@@ -377,8 +377,43 @@ export class Revisualizer extends EventTarget {
     this._updateCamera(st, dt);
     this.sky.position.copy(this.camera.position);
     this.ground.position.set(this.camera.position.x, this.camera.position.y, st.ego.p.z - 1.2);
-    this.renderer.render(this.scene, this.camera);
+    this._render();
     this._emit("frame", st);
+  }
+
+  /**
+   * AI overlay mode. "off": splats only. "full": splats hidden and the canvas transparent, so a generated
+   * frame placed under the canvas shows through with the car, path and chevrons drawn on top (the UI is
+   * composited over the 2D frame). "split": splats on the left of splitX, transparent on the right.
+   */
+  setAiMode(mode, splitX = this.splitX ?? 0.5) { this.aiMode = mode; this.splitX = splitX; }
+
+  _setWorldVisible(on) {
+    // hide the splat renderer itself rather than each SplatMesh, so the splat sort state is not disturbed
+    this.spark.visible = on;
+    this.sky.visible = on;
+    this.ground.visible = on;
+  }
+
+  _render() {
+    const r = this.renderer, mode = this.aiMode || "off";
+    if (mode === "off") { r.setClearAlpha(1); r.render(this.scene, this.camera); return; }
+    const w = r.domElement.clientWidth, h = r.domElement.clientHeight;
+    if (mode === "full") {
+      this._setWorldVisible(false); r.setClearAlpha(0);
+      r.render(this.scene, this.camera);
+      this._setWorldVisible(true); r.setClearAlpha(1);
+      return;
+    }
+    const sx = Math.round(w * this.splitX);
+    r.setScissorTest(true);
+    r.setScissor(0, 0, sx, h); r.setViewport(0, 0, w, h); r.setClearAlpha(1);
+    r.render(this.scene, this.camera);
+    this._setWorldVisible(false); r.setClearAlpha(0);
+    r.setScissor(sx, 0, w - sx, h);
+    r.render(this.scene, this.camera);
+    this._setWorldVisible(true); r.setClearAlpha(1);
+    r.setScissorTest(false);
   }
 
   _updateCamera(st, dt) {
@@ -392,7 +427,8 @@ export class Revisualizer extends EventTarget {
     const pos = base.clone().addScaledVector(fwd, -v.back * z).addScaledVector(UP, v.up * z + pitchLift);
     const hfwd = new THREE.Vector3(Math.cos(st.ego.yaw), Math.sin(st.ego.yaw), 0);
     const look = base.clone().addScaledVector(this.viewName === "hood" ? hfwd : fwd, v.ahead).addScaledVector(UP, v.lookUp);
-    const k = this._snapCam || !this._camPos ? 1 : 1 - Math.exp(-dt * 5);
+    // AI frames are rendered from the exact chase pose, so no camera smoothing while they are shown
+    const k = this._snapCam || !this._camPos || (this.aiMode && this.aiMode !== "off") ? 1 : 1 - Math.exp(-dt * 5);
     this._camPos = (this._camPos || pos.clone()).lerp(pos, k);
     this._camLook = (this._camLook || look.clone()).lerp(look, k);
     this._snapCam = false;

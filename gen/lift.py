@@ -43,14 +43,14 @@ def in_boxes(pts_ego, boxes):
     return m
 
 
-def colour_points(pw, ims, cams_w2c, Ks, occ=None, zgrid_div=8):
+def colour_points(pw, ims, cams_w2c, Ks, occ=None, zgrid_div=8, skies=None):
     """pw: N,3 world points. occ: points used for the occlusion z-buffer (default: pw itself).
     Returns colours N,3, a seen mask, and the distance to the camera the colour came from."""
     N = len(pw)
     best = torch.full((N,), 1e9, device=DEV)
     dist = torch.full((N,), 1e4, device=DEV)
     col = torch.zeros(N, 3, device=DEV)
-    for im, w2c, K in zip(ims, cams_w2c, Ks):
+    for ci, (im, w2c, K) in enumerate(zip(ims, cams_w2c, Ks)):
         H, W = im.shape[1:]
         def proj(p):
             pc = p @ w2c[:3, :3].T + w2c[:3, 3]
@@ -67,6 +67,10 @@ def colour_points(pw, ims, cams_w2c, Ks, occ=None, zgrid_div=8):
         zb = -F.max_pool2d(-zb.view(1, 1, gh, gw), 3, 1, 1).view(-1)
         gi = (v.clamp(0, H - 1) / zgrid_div).long() * gw + (u.clamp(0, W - 1) / zgrid_div).long()
         vis = ok & (z <= zb[gi] * 1.05 + 0.3)
+        if skies is not None:  # a point that lands on a sky pixel is a parallax / edge error: never take sky colour
+            sk = skies[ci]
+            sh, sw = sk.shape
+            vis &= ~sk[(v.clamp(0, H - 1) * sh / H).long().clamp(0, sh - 1), (u.clamp(0, W - 1) * sw / W).long().clamp(0, sw - 1)]
         # head-on score: angle from the optical axis (prefer the camera centre, less distortion / blur)
         r = ((u - K[0, 2]) / K[0, 0]) ** 2 + ((v - K[1, 2]) / K[1, 1]) ** 2
         take = vis & (r < best)
@@ -131,6 +135,7 @@ def mono_points(percep, ims, pw_lidar, cams_w2c, cams_c2w, Ks, stride=3, max_d=8
         cov[(v[ok] / g).long() * gw + (u[ok] / g).long()] = 1
         cov = cov.view(gh, gw)
         sh, sw = skym.shape
+        skym = F.max_pool2d(skym.float()[None, None], 7, 1, 3)[0, 0] > 0  # mono depth bleeds at sky edges
         ys, xs = torch.meshgrid(torch.arange(0, H, stride, device=DEV), torch.arange(0, W, stride, device=DEV), indexing="ij")
         ys, xs = ys.reshape(-1).float(), xs.reshape(-1).float()
         dd = d[(ys * dh / H).long().clamp(0, dh - 1), (xs * dw / W).long().clamp(0, dw - 1)] * s
@@ -259,18 +264,7 @@ class Lifter:
         c2w = [sc.cam_world(fi, ci) for ci in range(7)]
         w2c = [T_(np.linalg.inv(T)) for T in c2w]
         Ks = [T_(K) for K in sc.K]
-        col, seen, _ = colour_points(pw, ims, w2c, Ks)
-        t0 = self._tick("colour", t0)
-        is_ground = torch.zeros_like(seen)
-        if self.ground is not None:
-            g = self.ground
-            g.update_height(pw[~dyn], float(Twn[2, 3]))
-            is_ground = pw[:, 2] < g.height_at(pw[:, :2]) + 0.2
-            gp, gid = g.samples(Tw[:2, 3])
-            gcol, gseen, gdist = colour_points(gp, ims, w2c, Ks, occ=pw[~is_ground])
-            g.write(gid, gcol, gdist, gseen)
-            t0 = self._tick("ground", t0)
-        mp = mc = None
+        ds = None
         if self.mono is not None:
             ds = self.mono(ims)
             # sky colour (top / horizon rows of the sky pixels in the 3 front cameras) for the sky prior
@@ -286,6 +280,19 @@ class Lifter:
                 c = torch.stack(cs).mean(0)
                 self.sky_col = c if getattr(self, "sky_col", None) is None else 0.9 * self.sky_col + 0.1 * c
             t0 = self._tick("depth_sky_nets", t0)
+        col, seen, _ = colour_points(pw, ims, w2c, Ks, skies=[d[1] for d in ds] if ds else None)
+        t0 = self._tick("colour", t0)
+        is_ground = torch.zeros_like(seen)
+        if self.ground is not None:
+            g = self.ground
+            g.update_height(pw[~dyn], float(Twn[2, 3]))
+            is_ground = pw[:, 2] < g.height_at(pw[:, :2]) + 0.2
+            gp, gid = g.samples(Tw[:2, 3])
+            gcol, gseen, gdist = colour_points(gp, ims, w2c, Ks, occ=pw[~is_ground], skies=[d[1] for d in ds] if ds else None)
+            g.write(gid, gcol, gdist, gseen)
+            t0 = self._tick("ground", t0)
+        mp = mc = None
+        if self.mono is not None:
             mp, mc = mono_points(ds, ims, pw[seen], w2c, [T_(T) for T in c2w], Ks, stride=self.mono_stride)
             if self.ground is not None and len(mp):  # the ground grid already covers the road
                 mp_ok = mp[:, 2] > self.ground.height_at(mp[:, :2]) + 0.3

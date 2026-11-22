@@ -1,0 +1,22 @@
+{
+ "splat": {
+  "revisit_psnr_k1": 37.47004420940693,
+  "revisit_psnr_k5": 31.87656991958618,
+  "revisit_psnr_k10": 29.22323690715589
+ },
+ "splat_i2i": {
+  "revisit_psnr_k1": 35.30118817549486,
+  "revisit_psnr_k5": 28.42024621963501,
+  "revisit_psnr_k10": 26.134868481284695
+ },
+ "splat_i2i_notemp": {
+  "revisit_psnr_k1": 27.501435591624332,
+  "revisit_psnr_k5": 25.039195899963378,
+  "revisit_psnr_k10": 23.78705277693899
+ },
+ "live": {
+  "revisit_psnr_k1": 20.101128303087673,
+  "revisit_psnr_k5": 16.89794885635376,
+  "revisit_psnr_k10": 15.634174266614412
+ }
+}

@@ -1,0 +1,11 @@
+{
+ "difix_ref 960x544 eager": 274.4,
+ "difix_ref 512x288 eager": 75.6,
+ "difix_ref 960x544 compiled": 192.6,
+ "difix_ref 512x288 compiled": 60.7,
+ "difix 960x544 eager": 132.4,
+ "difix 512x288 eager": 50.4,
+ "difix 960x544 compiled": 98.3,
+ "difix 512x288 compiled": 37.4,
+ "_note": "ms per call incl. resize, RTX 4090, fp16, VAE LoRA merged; 960x544 = run size for 960x540 output; breakdown at 544x960 eager (difix_ref): VAE enc x2 67.5, UNet x2 44.7, VAE dec 219.7 unmerged / 162.3 merged"
+}

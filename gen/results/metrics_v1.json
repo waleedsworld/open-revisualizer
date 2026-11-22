@@ -1,0 +1,20 @@
+{
+ "lift": {
+  "revisit_psnr_k1": 23.038246870040894,
+  "revisit_psnr_k5": 20.90168348312378,
+  "revisit_psnr_k10": 19.8357850325735,
+  "psnr_vs_lift_known": 100.0
+ },
+ "live_v1": {
+  "revisit_psnr_k1": 30.07005808903621,
+  "revisit_psnr_k5": 22.730162410736085,
+  "revisit_psnr_k10": 20.971661236411645,
+  "psnr_vs_lift_known": 21.33366308666411
+ },
+ "live_v1_notemp": {
+  "revisit_psnr_k1": 21.62255945572486,
+  "revisit_psnr_k5": 19.93161937713623,
+  "revisit_psnr_k10": 19.10433967991879,
+  "psnr_vs_lift_known": 21.41979855128697
+ }
+}

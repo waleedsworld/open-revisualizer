@@ -128,8 +128,14 @@ export function bindHud(rv, root, { hud = true, t = 0 } = {}) {
   // render mode: per-scene splat vs AI (pre-generated live-mode frames) vs split
   const genview = $("genview"), genimg = $("genimg"), splitbar = $("splitbar"), seg = $("modeseg");
   let renderMode = "splat", lastGen = -1, splitX = 0.5;
-  const genBase = rv.sceneUrl + "/gen/live/";
-  fetch(genBase + "0000.jpg", { method: "HEAD" }).then((r) => { if (r.ok) seg.classList.remove("hidden"); }).catch(() => {});
+  // prefer the splat + I2I diffusion frames, fall back to the lidar-lift + I2I frames
+  let genBase = rv.sceneUrl + "/gen/splat_i2i/";
+  (async () => {
+    for (const dir of ["decoder", "dggt_fixer", "splat_i2i", "live"]) {
+      const r = await fetch(`${rv.sceneUrl}/gen/${dir}/0000.jpg`, { method: "HEAD" }).catch(() => null);
+      if (r?.ok) { genBase = `${rv.sceneUrl}/gen/${dir}/`; seg.classList.remove("hidden"); return; }
+    }
+  })();
   function updateGen(frame) {
     if (frame === lastGen) return;
     lastGen = frame;
@@ -143,11 +149,12 @@ export function bindHud(rv, root, { hud = true, t = 0 } = {}) {
     genview.classList.toggle("split", m === "split");
     splitbar.classList.toggle("hidden", m !== "split");
     if (m !== "splat") { rv.setView("reality"); updateGen(rv.state.frame); }
+    rv.setAiMode(m === "splat" ? "off" : m === "gen" ? "full" : "split", splitX);
     applySplit();
   }
   function applySplit() {
-    genview.style.clipPath = renderMode === "split" ? `inset(0 0 0 ${splitX * 100}%)` : "";
     splitbar.style.left = `${splitX * 100}%`;
+    if (renderMode === "split") rv.setAiMode("split", splitX);
   }
   seg.addEventListener("click", (e) => { const m = e.target.dataset?.m; if (m) setMode(m); });
   splitbar.addEventListener("pointerdown", (e) => {

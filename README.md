@@ -21,6 +21,22 @@ An open-source take on the "reality re-render" driving view: surround camera foo
 - **Dashcam strip.** Real footage from all cameras, synced to the 3D replay, in the same layout as an in-car dashcam viewer (Reality, Grid, each camera).
 - **Night mode, 4 camera views, scrubbing, URL-driven capture** for clean video frames.
 
+## Splat vs AI re-render
+
+A raw splat smears trees and leaves floaters, because no camera ever saw the scene from 5 m up. The in-car version hides this with generation, so this repo has the same layer: every chase-camera frame of the splat goes through a one-step image-to-image diffusion model ([Difix3D+](https://github.com/nv-tlabs/Difix3D), with the nearest real camera frame as reference). The car, path and chevrons are composited on top of the generated 2D frame. Switch between **Splat / AI / Split** in the viewer (`G`).
+
+<img src="docs/media/split_splat_vs_ai.jpg" width="880" alt="Split view: raw splat on the left, splat plus one-step diffusion on the right">
+
+<img src="docs/media/compare_4way.jpg" width="880" alt="Real front camera, per-scene splat, splat plus I2I, live lidar lift plus I2I">
+
+| mode | what it is | speed on a 4090 | steadiness (same spot, 1 s apart) |
+|---|---|---|---|
+| splat | per-scene 3DGS, trained offline | 22 ms/frame | 25.4 dB |
+| splat + I2I | splat render, then Difix3D+ one-step | +61 ms at 512x288, +193 ms at 960x544 | 23.6 dB |
+| live lift + I2I | that frame's lidar coloured by the 7 cameras, then Difix3D+, no training | 336 ms/frame | 21.2 dB |
+
+Splat + I2I looks best and stays geometrically locked, unlike free video generation, which drifted to 15–16 dB in our earlier tests. Getting to 60 fps needs a smaller distilled I2I model (TAESD decoder, TensorRT). Scripts and full timings are in [`gen/`](gen/README.md). A fully feed-forward, pixels-in-pixels-out decoder is being trained next ([research notes](docs/research/pixels-in-pixels-out.md)).
+
 ## Demo scene numbers
 
 | | |
@@ -52,6 +68,7 @@ No build step and no GPU. A laptop browser renders the scene at 60 fps.
 | `Space` · `←` `→` | play/pause · seek |
 | `1`–`4` or `V` | reality / close / top / hood view |
 | `C` · `N` · `H` | camera strip · night · hide HUD |
+| `G` | splat / AI / split |
 
 ## Use it as an SDK
 
@@ -112,6 +129,7 @@ python3 tools/make_synthetic_scene.py web/scenes/synthetic   # procedural test t
 - Code: MIT (this repo).
 - Demo scene: derived from [Argoverse 2](https://www.argoverse.org/), CC BY-NC-SA 4.0 (non-commercial; derived scene data keeps that licence).
 - Car model: [Car Concept](https://github.com/KhronosGroup/glTF-Sample-Assets/tree/main/Models/CarConcept) from the Khronos glTF Sample Assets, CC BY 4.0, based on a CC0 model by Unity Fan.
+- Generative layer: [Difix3D+](https://github.com/nv-tlabs/Difix3D) (NVIDIA, non-commercial licence), so the `gen/` frames are non-commercial.
 - Rendering: [three.js](https://threejs.org) (MIT) and [Spark](https://github.com/sparkjsdev/spark) (MIT).
 - Reconstruction: [drivestudio](https://github.com/ziyc/drivestudio), [gsplat](https://github.com/nerfstudio-project/gsplat), [SegFormer](https://github.com/NVlabs/SegFormer).
 

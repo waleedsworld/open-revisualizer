@@ -11,13 +11,22 @@ DEV = "cuda"
 
 class Difix:
     def __init__(self, weights="/root/gen/weights/difix_ref", src="/root/gen/Difix3D/src", size=(544, 960),
-                 dtype=torch.float16, timestep=199):
+                 dtype=torch.float16, timestep=199, compile=True):
         sys.path.insert(0, src)
         from pipeline_difix import DifixPipeline
         self.pipe = DifixPipeline.from_pretrained(weights, trust_remote_code=True, torch_dtype=dtype).to(DEV)
         self.pipe.set_progress_bar_config(disable=True)
         self.pipe.safety_checker = None
         self.size, self.dtype, self.timestep = size, dtype, timestep
+        # the VAE ships with an unmerged LoRA ("vae_skip"): merging it saves ~60 ms per frame, same output
+        from peft.tuners.lora import LoraLayer
+        for m in self.pipe.vae.modules():
+            if isinstance(m, LoraLayer):
+                m.merge()
+        if compile:  # inductor fusion: ~275 -> ~193 ms at 544x960 on a 4090 (first call compiles, ~2 min)
+            p = self.pipe
+            p.vae.decoder = torch.compile(p.vae.decoder); p.vae.encoder = torch.compile(p.vae.encoder)
+            p.unet = torch.compile(p.unet)
         with torch.no_grad():
             self.pe, _ = self.pipe.encode_prompt("remove degradation", DEV, 1, False)
 

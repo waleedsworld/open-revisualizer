@@ -48,6 +48,8 @@ if (mode === "shot") {
         if (s.cam) document.querySelector(`.strip .tile[data-key="${s.cam}"]`)?.click();
         if (s.resume) revis.resumeRoute();
         if (s.orbit) Object.assign(revis.orbit, s.orbit);
+        if (s.mode) revis.setRenderMode(s.mode);
+        if (s.split !== undefined) { revis.setAiMode("split", s.split); document.getElementById("splitbar").style.left = s.split * 100 + "%"; }
       }, s);
     }
     // advance simulation by exactly one frame, in small sub-steps for smooth camera

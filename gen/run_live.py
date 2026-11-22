@@ -33,6 +33,10 @@ def main():
     sc = Scene(a.proc, a.raw, a.tracks)
     lf = Lifter(sc, hist=a.hist, mono=a.mono, ground=not a.no_ground)
     dfx = None if a.no_difix else Difix()
+    if dfx is not None:  # warm-up / compile outside the timed loop
+        z = torch.rand(540, 960, 3, device="cuda")
+        for _ in range(2):
+            dfx(z, z)
     n = a.frames or sc.n
     prev = None
     times = []
