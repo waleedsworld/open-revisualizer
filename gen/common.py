@@ -34,8 +34,8 @@ def se3(q_wxyz, t):
 
 
 class Scene:
-    def __init__(self, proc, raw, tracks=None):
-        self.proc, self.raw = proc, raw
+    def __init__(self, proc, raw, tracks=None, img_scale=0.5):
+        self.proc, self.raw, self.img_scale = proc, raw, img_scale
         self.seg = json.load(open(f"{proc}/segment.json"))
         self.n = len(self.seg["frames"])
         self.poses = pd.read_feather(f"{raw}/city_SE3_egovehicle.feather").sort_values("timestamp_ns").reset_index(drop=True)
@@ -44,7 +44,8 @@ class Scene:
         self.K = []
         for ci in range(7):
             fx, fy, cx, cy = np.loadtxt(f"{proc}/intrinsics/{ci}.txt")[:4]
-            self.K.append(np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1.0]]))
+            k = img_scale
+            self.K.append(np.array([[fx * k, 0, (cx + 0.5) * k - 0.5], [0, fy * k, (cy + 0.5) * k - 0.5], [0, 0, 1.0]]))
         ann = pd.read_feather(f"{raw}/annotations.feather")
         self.ann = ann[ann.category.isin(DYNAMIC)]
         self.tracks = json.load(open(tracks)) if tracks else None
@@ -79,6 +80,26 @@ class Scene:
         A = self.ann[self.ann.timestamp_ns == ts]
         return [(se3([r.qw, r.qx, r.qy, r.qz], [r.tx_m, r.ty_m, r.tz_m]),
                  np.array([r.length_m, r.width_m, r.height_m]) / 2) for r in A.itertuples()]
+
+    def prefetch(self, fi):
+        """the 7 camera frames as uint8 HxWx3 arrays at img_scale, read + decoded ahead in worker threads.
+        JPEG decoding is an artefact of the dataset (a car gets raw frames), so it overlaps the pipeline."""
+        from concurrent.futures import ThreadPoolExecutor
+        from PIL import Image
+        def load(f):
+            out = []
+            for ci in range(7):
+                im = Image.open(self.image_path(f, ci))
+                w, h = im.size
+                im.draft("RGB", (int(w * self.img_scale), int(h * self.img_scale)))  # DCT-domain downscale
+                out.append(np.asarray(im.convert("RGB")))
+            return out
+        if not hasattr(self, "_pool"):
+            self._pool, self._fut = ThreadPoolExecutor(3), {}
+        for f in range(fi, min(fi + 3, self.n)):
+            if f not in self._fut:
+                self._fut[f] = self._pool.submit(load, f)
+        return self._fut.pop(fi).result()
 
     def image_path(self, fi, ci):
         return f"{self.proc}/images/{fi:03d}_{ci}.jpg"

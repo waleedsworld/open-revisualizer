@@ -1,7 +1,7 @@
 [
-  {"at": 6.8, "tap": [0.40, 0.60]},
-  {"at": 9.6, "cams": true},
-  {"at": 10.4, "cam": "grid"},
+  {"at": 6.6, "tap": [0.33, 0.55]},
+  {"at": 9.8, "cams": true},
+  {"at": 10.5, "cam": "grid"},
   {"at": 11.6, "cam": "reality"},
   {"at": 11.7, "cams": true}
 ]

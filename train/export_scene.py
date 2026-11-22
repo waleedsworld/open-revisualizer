@@ -25,13 +25,23 @@ ap.add_argument("--raw_log", required=True)
 ap.add_argument("--out", required=True)
 ap.add_argument("--name", required=True)
 ap.add_argument("--max_bg", type=int, default=1_500_000)
-ap.add_argument("--keep_sh_rest", action="store_true", help="write the 9 SH degree-1 coefficients (bigger files)")
+ap.add_argument("--keep_sh_rest", action="store_true", help="write the 9 SH degree-1 coefficients (same as --sh_out 1)")
+ap.add_argument("--sh_out", type=int, default=0, help="SH degree written to the plys (0..trained degree)")
+ap.add_argument("--no_size_limit", action="store_true", help="no importance prune / 95 MB cap (HD export)")
+ap.add_argument("--resolution", default="", help="training resolution note for meta.json")
+ap.add_argument("--eval_half", action="store_true",
+                help="also score the held-out images after 2x downsampling render and GT (comparable to a half-res run)")
+ap.add_argument("--compare_ckpt", default="", help="second (e.g. half-res) checkpoint for a 1:1 crop comparison")
+ap.add_argument("--compare_crop", default="1100,880,400,400", help="x,y,w,h of the native-res crop (front camera)")
 ap.add_argument("--max_bytes", type=float, default=94e6, help="per-file size budget (GitHub limit is 100 MB)")
 ap.add_argument("--max_dist", type=float, default=150.0)
 ap.add_argument("--train_minutes", type=float, default=-1)
 ap.add_argument("--gpu", default="")
 ap.add_argument("--skip_previews", action="store_true")
 a = ap.parse_args()
+if a.keep_sh_rest:
+    a.sh_out = max(a.sh_out, 1)
+NCOEF = (a.sh_out + 1) ** 2 - 1  # f_rest coefficients per colour channel
 os.makedirs(a.out, exist_ok=True)
 dev = torch.device("cuda")
 log_dir = os.path.dirname(a.ckpt)
@@ -89,7 +99,8 @@ def gparams(m, mask=None):
     if mask is not None:
         xyz, dc, rest, op, sc, q = xyz[mask], dc[mask], rest[mask], op[mask], sc[mask], q[mask]
     # INRIA order: f_rest is channel-major (all R coeffs, then G, then B)
-    rest = rest[:, :3, :].transpose(1, 2).reshape(len(xyz), -1) if (rest.shape[1] >= 3 and a.keep_sh_rest) else None
+    assert NCOEF <= rest.shape[1], (NCOEF, rest.shape)
+    rest = rest[:, :NCOEF, :].transpose(1, 2).reshape(len(xyz), -1) if NCOEF > 0 else None
     return [t.cpu().numpy() if t is not None else None for t in (xyz, dc, rest, op, sc, q)]
 
 
@@ -106,9 +117,9 @@ opa = 1 / (1 + np.exp(-op))
 maxs = np.exp(sc.max(1))
 keep = (opa > 0.03) & (dist < a.max_dist) & (maxs < 15.0) & np.isfinite(xyz).all(1)
 print(f"background: {n0} -> {keep.sum()} after opacity/size/distance prune")
-bytes_per = 4 * (3 + 3 + (9 if rest is not None else 0) + 1 + 3 + 4)
+bytes_per = 4 * (3 + 3 + 3 * NCOEF + 1 + 3 + 4)
 a.max_bg = min(a.max_bg, int((a.max_bytes - 4096) // bytes_per))
-if keep.sum() > a.max_bg:
+if keep.sum() > a.max_bg and not a.no_size_limit:
     imp = opa * np.exp(sc.sum(1)) ** (1 / 3)
     thr = np.sort(imp[keep])[-a.max_bg]
     keep &= imp >= thr
@@ -117,7 +128,7 @@ size = write_ply(os.path.join(a.out, "background.ply"), xyz[keep], dc[keep], res
                  op[keep], sc[keep], q[keep])
 n_bg = int(keep.sum())
 print("background.ply", n_bg, size / 1e6, "MB")
-assert size < 95e6
+assert size < 95e6 or a.no_size_limit
 
 # ---------------------------------------------------------------- sky dome (extra file)
 sky = trainer.models["Sky"]
@@ -259,6 +270,60 @@ if not a.skip_previews:
     psnr_note = {"compare_frame": fsel, "compare_is_heldout": bool(fsel in test_ts), "compare_psnr": round(psnr, 2)}
     print("compare", psnr_note)
 
+# ---------------------------------------------------------------- held-out metrics after 2x downsampling
+extra_eval = {}
+
+
+def to_dev(d):
+    return {k_: (v_.to(dev) if isinstance(v_, torch.Tensor) else v_) for k_, v_ in d.items()}
+
+
+if a.eval_half and dataset.test_image_set is not None:
+    from skimage.metrics import structural_similarity as ssim_fn
+    ps, ss, ls = [], [], []
+    for j in range(len(dataset.test_image_set)):
+        ii, ci = dataset.test_image_set.get_image(j, camera_downscale=1)
+        ii, ci = to_dev(ii), to_dev(ci)
+        with torch.no_grad():
+            pr = trainer(ii, ci, novel_view=False)["rgb"].clamp(0, 1)
+            half = lambda x: F.interpolate(x.permute(2, 0, 1)[None], scale_factor=0.5, mode="bilinear",
+                                           antialias=True, align_corners=False)[0].permute(1, 2, 0).clamp(0, 1)
+            p2, g2 = half(pr), half(ii["pixels"])
+            ps.append(float(-10 * torch.log10(((p2 - g2) ** 2).mean())))
+            ss.append(float(ssim_fn(p2.cpu().numpy(), g2.cpu().numpy(), data_range=1.0, channel_axis=-1)))
+            ls.append(float(trainer.lpips(p2[None].permute(0, 3, 1, 2), g2[None].permute(0, 3, 1, 2))))
+    extra_eval = {"eval_at_half_res": {"psnr": round(float(np.mean(ps)), 3), "ssim": round(float(np.mean(ss)), 4),
+                                       "lpips": round(float(np.mean(ls)), 4), "n_images": len(ps),
+                                       "note": "native-res renders and GT both downsampled 2x (bilinear, antialiased), "
+                                               "for comparison with a model trained at half resolution"}}
+    print("eval_at_half_res", extra_eval)
+
+# ---------------------------------------------------------------- 1:1 crop vs another checkpoint (e.g. half-res)
+if a.compare_ckpt and not a.skip_previews:
+    ccfg = OmegaConf.load(os.path.join(os.path.dirname(a.compare_ckpt), "config.yaml"))
+    tr2 = import_str(ccfg.trainer.type)(
+        **ccfg.trainer, num_timesteps=dataset.num_img_timesteps, model_config=ccfg.model,
+        num_train_images=len(dataset.train_image_set), num_full_images=len(dataset.full_image_set),
+        test_set_indices=dataset.test_timesteps, scene_aabb=dataset.get_aabb().reshape(2, 3), device=dev)
+    tr2.resume_from_checkpoint(ckpt_path=a.compare_ckpt, load_only_model=True)
+    tr2.set_eval()
+    x0, y0, cw, chh = [int(v) for v in a.compare_crop.split(",")]
+    fsel = psnr_note.get("compare_frame", N // 2)
+    ii, ci = dataset.full_image_set.get_image(fsel * len(cams) + 0, camera_downscale=1)
+    ii, ci = to_dev(ii), to_dev(ci)
+    with torch.no_grad():
+        r_hd = trainer(ii, ci, novel_view=False)["rgb"].clamp(0, 1)
+        r_lo = tr2(ii, ci, novel_view=False)["rgb"].clamp(0, 1)
+    crops = [x[y0:y0 + chh, x0:x0 + cw] for x in (ii["pixels"], r_lo, r_hd)]
+    gap = torch.ones(chh, 8, 3, device=dev)
+    row = torch.cat([crops[0], gap, crops[1], gap, crops[2]], 1).cpu().numpy()
+    Image.fromarray((row * 255).astype(np.uint8)).save(
+        os.path.join(prev, f"crop_1to1_f{fsel:03d}_gt_halfres_hd.png"))
+    full = torch.cat([r_lo, r_hd], 1).cpu().numpy()
+    Image.fromarray((full * 255).astype(np.uint8)).save(os.path.join(prev, f"real_camera_front_f{fsel:03d}_halfres_vs_hd.jpg"), quality=92)
+    print("crop comparison written", x0, y0, cw, chh)
+    del tr2
+
 # ---------------------------------------------------------------- meta + sanity
 metrics = {}
 mdir = os.path.join(log_dir, "metrics")
@@ -276,9 +341,11 @@ for i in range(0, N, 8):  # road height relative to the ego pose, from the 2.5-5
         h, bins = np.histogram(zz[mm], bins=np.arange(-1.5, 1.5, 0.05)); rels.append(bins[h.argmax()] + 0.025)
 road_z = float(np.median(rels)) if rels else None
 meta = {"name": a.name, "source": f"Argoverse 2 Sensor, log {seg['log_id']}, CC BY-NC-SA 4.0",
-        "segment": [seg["t0"], seg["t1"]], "num_gaussians_bg": n_bg, "sh_degree_in_ply": 1 if rest is not None else 0, "num_actors": n_act,
+        "segment": [seg["t0"], seg["t1"]], "num_gaussians_bg": n_bg, "num_gaussians_bg_trained": int(n0),
+        "sh_degree_trained": int(cfg.trainer.gaussian_ctrl_general_cfg.sh_degree), "sh_degree_in_ply": a.sh_out,
+        "num_actors": n_act, **({"resolution": a.resolution} if a.resolution else {}),
         "train_iters": int(trainer.step), "gpu": a.gpu, "train_minutes": a.train_minutes,
-        "road_z_below_ego": road_z, "metrics_files": metrics, **psnr_note,
+        "road_z_below_ego": road_z, "metrics_files": metrics, **psnr_note, **extra_eval,
         "notes": ""}
 json.dump(meta, open(os.path.join(a.out, "meta.json"), "w"), indent=1)
 print(json.dumps({k: v for k, v in meta.items() if k != "metrics_files"}, indent=1))

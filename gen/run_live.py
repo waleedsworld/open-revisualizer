@@ -11,7 +11,7 @@ import numpy as np, torch, torch.nn.functional as F
 from torchvision.io import write_jpeg
 
 from common import Scene, CHASE
-from lift import Lifter, pull_push
+from lift import Lifter, pull_push, sky_prior
 from repaint import Difix, front_panorama, warp_prev
 
 
@@ -42,7 +42,11 @@ def main():
         cur = lf.ingest(fi)
         r = lf.render(fi, cur)
         t0 = time.perf_counter()
-        filled = pull_push(r["img"], r["hit"])
+        sc_col = getattr(lf, "sky_col", None)
+        if sc_col is None:
+            sc_col = torch.tensor([[0.45, 0.62, 0.85], [0.75, 0.82, 0.9]], device="cuda")
+        pre, pre_hit = sky_prior(r["img"], r["hit"], r["c2w"], r["K"], sc_col)
+        filled = pull_push(pre, pre_hit)
         torch.cuda.synchronize(); lf.t["fill"] = (time.perf_counter() - t0) * 1000; t0 = time.perf_counter()
         K = torch.as_tensor(r["K"], dtype=torch.float32, device="cuda")
         if dfx is not None:

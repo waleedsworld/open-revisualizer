@@ -8,7 +8,7 @@ An open-source take on the "reality re-render" driving view: surround camera foo
 
 [**Live demo**](https://waleedsworld.github.io/open-revisualizer/) · [SDK](docs/SDK.md) · [Scene format](docs/SCENE_FORMAT.md) · [Train your own](train/README.md)
 
-<img src="docs/media/demo.gif" width="880" alt="Open Revisualizer: a real Argoverse 2 drive re-rendered as Gaussian splats with a game-style car UI">
+<img src="docs/media/demo.gif" width="880" alt="Open Revisualizer: a real Argoverse 2 drive re-rendered as Gaussian splats with a game-style car UI, night mode">
 
 </div>
 

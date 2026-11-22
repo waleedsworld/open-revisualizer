@@ -26,8 +26,8 @@ def T_(a):
 
 
 def load_images(sc, fi):
-    datas = [read_file(sc.image_path(fi, ci)) for ci in range(7)]
-    return [x.float() / 255.0 for x in decode_jpeg(datas, device=DEV)]  # 7 x (3,H,W), batched nvjpeg
+    """camera frames -> GPU float tensors (3,H,W)."""
+    return [torch.from_numpy(a).to(DEV, non_blocking=True).permute(2, 0, 1).float() / 255.0 for a in sc.prefetch(fi)]
 
 
 def in_boxes(pts_ego, boxes):
@@ -78,33 +78,41 @@ def colour_points(pw, ims, cams_w2c, Ks, occ=None, zgrid_div=8):
     return col, best < 1e8, dist
 
 
-class MonoDepth:
-    """Depth Anything V2 metric (outdoor), scale-aligned per camera to the projected lidar."""
+class Perception:
+    """Depth Anything V2 metric outdoor (Small) + SegFormer-B0 Cityscapes sky mask, batched over the cameras."""
 
-    def __init__(self, name="depth-anything/Depth-Anything-V2-Metric-Outdoor-Small-hf"):
-        from transformers import AutoModelForDepthEstimation
-        self.m = AutoModelForDepthEstimation.from_pretrained(name, torch_dtype=torch.float16).to(DEV).eval()
+    def __init__(self, depth="/root/gen/weights/da2s", seg="/root/gen/weights/segb0"):
+        from transformers import AutoModelForDepthEstimation, SegformerForSemanticSegmentation
+        self.dm = AutoModelForDepthEstimation.from_pretrained(depth, torch_dtype=torch.float16).to(DEV).eval()
+        self.sm = SegformerForSemanticSegmentation.from_pretrained(seg, torch_dtype=torch.float16).to(DEV).eval()
         self.mean = T_([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
         self.std = T_([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
 
     @torch.no_grad()
-    def __call__(self, ims, h=392, w=518):
-        out = []
-        # cameras have different sizes: batch the landscape ones, run the portrait one alone
-        for im in ims:
-            H, W = im.shape[1:]
-            hh, ww = (h, w) if W >= H else (w, h)
-            x = F.interpolate(im[None], (hh // 14 * 14, ww // 14 * 14), mode="bilinear", align_corners=False)
+    def __call__(self, ims, dsize=(392, 518), ssize=(384, 512)):
+        """returns per camera (depth map [m], sky mask), both at the network resolution."""
+        land = [i for i, im in enumerate(ims) if im.shape[2] >= im.shape[1]]
+        port = [i for i in range(len(ims)) if i not in land]
+        out = [None] * len(ims)
+        for group, flip in ((land, False), (port, True)):
+            if not group:
+                continue
+            dh, dw = dsize[::-1] if flip else dsize
+            sh, sw = ssize[::-1] if flip else ssize
+            x = torch.stack([F.interpolate(ims[i][None], (dh, dw), mode="bilinear", align_corners=False)[0] for i in group])
             x = ((x - self.mean) / self.std).half()
-            d = self.m(pixel_values=x).predicted_depth  # 1,h,w metres
-            out.append(d[0].float())
+            d = self.dm(pixel_values=x).predicted_depth.float()
+            xs = F.interpolate(x, (sh, sw), mode="bilinear", align_corners=False)
+            sky = self.sm(pixel_values=xs).logits.argmax(1) == 10  # cityscapes class 10 = sky
+            for j, i in enumerate(group):
+                out[i] = (d[j], sky[j])
         return out
 
 
-def mono_points(depths, ims, pw_lidar, cams_w2c, cams_c2w, Ks, stride=6, max_d=60.0):
-    """Back-project mono depth (aligned to lidar) where no lidar point lands nearby. Returns points, colours."""
+def mono_points(percep, ims, pw_lidar, cams_w2c, cams_c2w, Ks, stride=3, max_d=80.0):
+    """Back-project mono depth (scale-aligned to lidar) where no lidar point lands nearby, sky excluded."""
     P, C = [], []
-    for d, im, w2c, c2w, K in zip(depths, ims, cams_w2c, cams_c2w, Ks):
+    for (d, skym), im, w2c, c2w, K in zip(percep, ims, cams_w2c, cams_c2w, Ks):
         H, W = im.shape[1:]
         dh, dw = d.shape
         pc = pw_lidar @ w2c[:3, :3].T + w2c[:3, 3]
@@ -117,16 +125,18 @@ def mono_points(depths, ims, pw_lidar, cams_w2c, cams_c2w, Ks, stride=6, max_d=6
         du, dv = (u[ok] * dw / W).long().clamp(0, dw - 1), (v[ok] * dh / H).long().clamp(0, dh - 1)
         s = torch.median(z[ok] / d[dv, du].clamp(min=0.1))
         # lidar coverage on a coarse grid: only fill cells the lidar left empty
-        g = 16
+        g = 6
         gw, gh = W // g + 1, H // g + 1
         cov = torch.zeros(gw * gh, device=DEV)
         cov[(v[ok] / g).long() * gw + (u[ok] / g).long()] = 1
-        cov = F.max_pool2d(cov.view(1, 1, gh, gw), 3, 1, 1).view(gh, gw)
+        cov = cov.view(gh, gw)
+        sh, sw = skym.shape
         ys, xs = torch.meshgrid(torch.arange(0, H, stride, device=DEV), torch.arange(0, W, stride, device=DEV), indexing="ij")
         ys, xs = ys.reshape(-1).float(), xs.reshape(-1).float()
         dd = d[(ys * dh / H).long().clamp(0, dh - 1), (xs * dw / W).long().clamp(0, dw - 1)] * s
         keep = (dd < max_d) & (d[(ys * dh / H).long().clamp(0, dh - 1), (xs * dw / W).long().clamp(0, dw - 1)] < 70) \
-            & (cov[(ys / g).long(), (xs / g).long()] == 0)
+            & (cov[(ys / g).long(), (xs / g).long()] == 0) \
+            & ~skym[(ys * sh / H).long().clamp(0, sh - 1), (xs * sw / W).long().clamp(0, sw - 1)]
         ys, xs, dd = ys[keep], xs[keep], dd[keep]
         rays = torch.stack([(xs - K[0, 2]) / K[0, 0], (ys - K[1, 2]) / K[1, 1], torch.ones_like(xs)], -1)
         p = (rays * dd[:, None]) @ c2w[:3, :3].T + c2w[:3, 3]
@@ -137,7 +147,7 @@ def mono_points(depths, ims, pw_lidar, cams_w2c, cams_c2w, Ks, stride=6, max_d=6
     return torch.cat(P), torch.cat(C)
 
 
-def splat(pts, cols, w2c, K, W, H, world_size, rmax=7, dyn=None, leak_k=7):
+def splat(pts, cols, w2c, K, W, H, world_size, rmax=7, dyn=None, leak_k=5):
     """Point splatting with a z-buffer. world_size: per-point footprint in metres (tensor N)."""
     pc = pts @ w2c[:3, :3].T + w2c[:3, 3]
     z = pc[:, 2]
@@ -189,6 +199,21 @@ def splat(pts, cols, w2c, K, W, H, world_size, rmax=7, dyn=None, leak_k=7):
     return img, hit, depth, dmask
 
 
+def sky_prior(img, hit, c2w, K, sky_col):
+    """holes whose viewing ray points above the horizon get a zenith->horizon sky gradient."""
+    H, W = hit.shape
+    ys, xs = torch.meshgrid(torch.arange(H, device=DEV, dtype=torch.float32),
+                            torch.arange(W, device=DEV, dtype=torch.float32), indexing="ij")
+    d = torch.stack([(xs - K[0, 2]) / K[0, 0], (ys - K[1, 2]) / K[1, 1], torch.ones_like(xs)], -1) @ T_(c2w[:3, :3]).T
+    el = d[..., 2] / d.norm(dim=-1)
+    m = ~hit & (el > 0.0)
+    a = (el / 0.35).clamp(0, 1)[..., None]
+    grad = sky_col[1] * (1 - a) + sky_col[0] * a
+    out = img.clone()
+    out[m] = grad[m]
+    return out, hit | m
+
+
 def pull_push(img, mask, levels=8):
     """Fill holes by a mask-weighted image pyramid (cheap, smooth). img H,W,3, mask H,W bool."""
     x = img.permute(2, 0, 1)[None] * mask[None, None]
@@ -206,9 +231,9 @@ def pull_push(img, mask, levels=8):
 
 
 class Lifter:
-    def __init__(self, sc: Scene, hist=10, mono=False, mono_stride=6, ground=True):
+    def __init__(self, sc: Scene, hist=10, mono=False, mono_stride=3, ground=True):
         self.sc, self.hist, self.mono_stride = sc, hist, mono_stride
-        self.mono = MonoDepth() if mono else None
+        self.mono = Perception() if mono else None
         self.ground = Ground() if ground else None
         self.cache = {}  # fi -> (static pts, static cols) in world
         self.t = {}
@@ -248,14 +273,27 @@ class Lifter:
         mp = mc = None
         if self.mono is not None:
             ds = self.mono(ims)
-            t0 = self._tick("mono_depth", t0)
+            # sky colour (top / horizon rows of the sky pixels in the 3 front cameras) for the sky prior
+            cs = []
+            for ci in (0, 1, 2):
+                sk = ds[ci][1]
+                if sk.sum() > 100:
+                    im_s = F.interpolate(ims[ci][None], sk.shape, mode="area")[0]
+                    rows = sk.any(1).nonzero().view(-1)
+                    top = sk.clone(); top[rows[len(rows) // 2]:] = False  # upper half of the sky band = zenith colour
+                    cs.append(torch.stack([im_s[:, top].mean(1), im_s[:, sk & ~top].mean(1)]))
+            if cs:
+                c = torch.stack(cs).mean(0)
+                self.sky_col = c if getattr(self, "sky_col", None) is None else 0.9 * self.sky_col + 0.1 * c
+            t0 = self._tick("depth_sky_nets", t0)
             mp, mc = mono_points(ds, ims, pw[seen], w2c, [T_(T) for T in c2w], Ks, stride=self.mono_stride)
             if self.ground is not None and len(mp):  # the ground grid already covers the road
                 mp_ok = mp[:, 2] > self.ground.height_at(mp[:, :2]) + 0.3
                 mp, mc = mp[mp_ok], mc[mp_ok]
             t0 = self._tick("mono_lift", t0)
         st = seen & ~dyn & ~is_ground
-        self.cache[fi] = (pw[st], col[st])
+        rng = pe.norm(dim=1)  # range from the lidar: footprint grows with the beam spacing
+        self.cache[fi] = (pw[st], col[st], (0.006 * rng[st]).clamp(0.12, 0.5))
         for k in list(self.cache):
             if k <= fi - self.hist:
                 del self.cache[k]
@@ -268,7 +306,8 @@ class Lifter:
         w2c = T_(np.linalg.inv(c2w)); Kt = T_(K)
         sp = torch.cat([v[0] for v in self.cache.values()])
         scol = torch.cat([v[1] for v in self.cache.values()])
-        P, C, S, D = [sp, cur["dyn_p"]], [scol, cur["dyn_c"]], [0.14, 0.22], [False, True]
+        ssz = torch.cat([v[2] for v in self.cache.values()])
+        P, C, S, D = [sp, cur["dyn_p"]], [scol, cur["dyn_c"]], [ssz, 0.22], [False, True]
         if self.ground is not None:
             gp, gc = self.ground.points(cur["ego_xy"])
             P.append(gp); C.append(gc); S.append(self.ground.res * 1.25); D.append(False)

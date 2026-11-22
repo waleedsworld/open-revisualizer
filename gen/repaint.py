@@ -27,8 +27,8 @@ class Difix:
         H, W = img.shape[:2]
         h, w = self.size
         x = F.interpolate(img.permute(2, 0, 1)[None], (h, w), mode="bilinear", align_corners=False)
-        r = F.interpolate(ref.permute(2, 0, 1)[None], (h, w), mode="bilinear", align_corners=False)
-        out = self.pipe(prompt_embeds=self.pe, image=x.clamp(0, 1), ref_image=r.clamp(0, 1) if ref is not None else None,
+        r = None if ref is None else F.interpolate(ref.permute(2, 0, 1)[None], (h, w), mode="bilinear", align_corners=False).clamp(0, 1)
+        out = self.pipe(prompt_embeds=self.pe, image=x.clamp(0, 1), ref_image=r,
                         num_inference_steps=1, timesteps=[self.timestep], guidance_scale=0.0, height=h, width=w,
                         output_type="pt").images
         out = out.float()
